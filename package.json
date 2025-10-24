@@ -1,7 +1,7 @@
 {
-  "name": "gijos-whatsapp-bot",
+  "name": "gijos-chat",
   "version": "1.0.0",
-  "description": "GiJos AI chat assistent (lokale webchat)",
+  "description": "GiJos AI chat assistent (webchat)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
