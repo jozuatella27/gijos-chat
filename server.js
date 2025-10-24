@@ -1,16 +1,24 @@
 // server.js
 //
-// Start met: npm start
+// Start lokaal: node server.js
+// In Render draait hij automatisch via "Start Command: node server.js"
 //
-// Dit script:
-// - draait http://localhost:3001
-// - serve't de chat UI uit /public/index.html
-// - /chat stuurt bericht naar OpenAI en geeft antwoord terug
+// Deze versie gebruikt jouw nieuwe regels:
+// - Afhaallocatie, geen winkel
+// - Eerst laten zeggen wat ze willen en hoeveel
+// - Check voorraad
+// - Bieden om vast te houden op naam
+// - Reserve / backorder als niet op voorraad
+// - Altijd vragen naam + tijd
 //
-// Belangrijk:
-// - Geen image generation meer
-// - Model praat ALLEEN over GiJos (adres, producten, prijzen, ophalen)
-// - Tijden zijn juist (ma–vr vaste tijd, za op afspraak)
+// LET OP: ik laat nu "voorraad checken" nog niet echt iets blokkeren,
+// want we hebben geen database met stock levels per geur.
+// Maar de AI zal wel praten volgens jouw flow (heb je? hoeveel wil je? enz).
+//
+// Later kunnen we `SHOP.inventory` toevoegen met true/false per geur
+// en dat meegeven aan de prompt.
+//
+// Belangrijk: vul je OPENAI_API_KEY via Render env vars (heb je al gedaan).
 
 const express = require("express");
 const cors = require("cors");
@@ -18,261 +26,351 @@ const path = require("path");
 require("dotenv").config();
 const { OpenAI } = require("openai");
 
-// ---- OpenAI client ----
+// ---------- OPENAI CLIENT ----------
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// ---- Winkel data van GiJos ----
+// ---------- SHOP DATA ----------
 const SHOP = {
   name: "GiJos",
-  address: "Bromidestraat 32, Tourtonne 5, Paramaribo",
-  pickupWindow:
-    "ma–vr 13:00–18:00. Zaterdag op afspraak, zondag gesloten.",
+  addressLines: [
+    "Bromidestraat 32",
+    "Tourtonne 5",
+    "Paramaribo",
+  ],
+  fullAddressLine: "Bromidestraat 32 Tourtonne 5 Paramaribo",
+  pickupWindowText:
+    "Elke dag tussen 13u en 18u. Zaterdag kan ook maar op afspraak. (Geen zondag standaard.)",
   phone: "+597 840-6813",
+  bankInfo:
+    "Naam Jozua Burke, FinaBank rekeningnummer 1001086169. Stuur daarna even een screenshot.",
   products: [
     {
-      name: "Chupa Chups Bodymist",
-      type: "bodymist",
-      geuren: [
-        "Cheeky Cherry",
-        "Strawberry Swirl",
-        "Tutti Frutty",
-        "Watermelon"
-      ],
-      pricePiece: 200,
+      key: "bodymist",
+      name: "Body mist Chupa Chups 100 ml",
+      variants: ["Cheeky Cherry", "Strawberry Swirl", "Tutti Frutty", "Watermelon"],
+      priceEach: 200,
       priceSet4: 800,
-      desc: "Zoete, fruity body mist. Blijft lang hangen maar is niet te zwaar.",
-      hot: true,
-      lowStockNote: "Sommige geuren bijna op."
+      notesForAgent:
+        "Altijd zeggen dat klant kan kiezen per geur of hele set. Dit is een hot item.",
     },
     {
-      name: "Chupa Chups Lippenbalsem Set",
-      type: "lippenbalsem",
-      smaken: [
-        "Watermeloen",
-        "Appel",
-        "Aardbei",
-        "Citroen",
-        "Perzik"
-      ],
+      key: "lipbalm",
+      name: "Lippenbalsem set Chupa Chups (5 stuks)",
       priceSet: 250,
-      desc: "Set van 5 lip balms. Maakt lippen zacht en geeft een lichte glans.",
-      hot: true,
-      lowStockNote: "Op voorraad."
+      notesForAgent:
+        "Fruity smaken zoals watermeloen / appel / aardbei / citroen / perzik.",
     },
     {
+      key: "aloe",
+      name: "Aloe Vera dag en nacht creme 110 ml",
+      priceEach: 300,
+      notesForAgent:
+        "Zeg: helpt huid zacht en rustig houden, fijn voor droge/gevoelige huid en na zon.",
+    },
+    {
+      key: "slakkengel",
       name: "Slakkengel (Snail Repair Gel)",
-      type: "slakkengel",
-      price: 350,
-      desc: "Helpt bij acne plekjes en littekens. Maakt de huid zachter en geeft glow.",
-      usage: "Dun laagje op schone huid, 1-2x per dag.",
-      hot: true,
-      lowStockNote: "Beperkt, gaat hard."
+      priceEach: 200, // <- als dit eigenlijk nu SRD 200 moet zijn, zeg het me.
+      notesForAgent:
+        "Zeg altijd dat dit bijna uitverkocht gaat. Gebruik woorden zoals 'gaat snel', 'bijna op'. Geen medische beloftes. Je mag zeggen: helpt huid zacht/glad houden en mensen gebruiken het voor plekjes zodat de huid egaler oogt.",
     },
     {
-      name: "Aloe Vera Dag & Nacht Crème 110 ml",
-      type: "aloe",
-      price: 300,
-      desc: "Hydraterende crème met aloe vera. Kalmeert droge huid, ook fijn na zon.",
-      usage: "Dun laagje 's ochtends en 's avonds op schone huid.",
-      hot: true,
-      lowStockNote: "Op voorraad."
-    }
-  ]
+      key: "douchegel",
+      name: "Douchegel Chupa Chups 300 ml",
+      priceEach: 300,
+      notesForAgent:
+        "Geuren zoals Choco Vanilla en Strawberry. Zeg dat het zoet ruikt.",
+    },
+  ],
 };
 
-// ---- helper: bouw product-catalogus tekst ----
+// ---------- BUILD PRODUCT LIST TEXT (for AI memory + fallback text) ----------
 function buildProductCatalogText() {
-  return SHOP.products
-    .map((p) => {
-      if (p.type === "bodymist") {
-        return `${p.name}
-- Geuren: ${p.geuren.join(", ")}
-- SRD ${p.pricePiece} per stuk
-- SRD ${p.priceSet4} voor set van 4
-- ${p.desc}
-- ${p.lowStockNote}${p.hot ? " (populair)" : ""}`;
-      }
-      if (p.type === "lippenbalsem") {
-        return `${p.name}
-- Smaken: ${p.smaken.join(", ")}
-- SRD ${p.priceSet} per set (5 stuks)
-- ${p.desc}
-- ${p.lowStockNote}${p.hot ? " (populair)" : ""}`;
-      }
-      if (p.type === "slakkengel") {
-        return `${p.name}
-- SRD ${p.price}
-- ${p.desc}
-- Gebruik: ${p.usage}
-- ${p.lowStockNote}${p.hot ? " (gaat snel op)" : ""}`;
-      }
-      if (p.type === "aloe") {
-        return `${p.name}
-- SRD ${p.price}
-- ${p.desc}
-- Gebruik: ${p.usage}
-- ${p.lowStockNote}${p.hot ? " (favoriet)" : ""}`;
-      }
-      return "";
-    })
-    .join("\n\n");
-}
-
-// ---- System prompt: hoe de AI moet praten ----
-function buildSystemPrompt() {
   return `
-Je bent de chat-assistent van "${SHOP.name}".
+Populaire dingen nu
 
-Stijl:
-- vriendelijk en normaal
-- klinkt menselijk, WhatsApp-gevoel
-- kleine Surinaamse/Nederlandse mix is goed
-- kort en duidelijk
-- niet te formeel, niet te overdreven schatjes in elke zin (hou het natuurlijk)
+Body mist Chupa Chups 100 ml
+SRD 200 per stuk
+SRD 800 voor set van 4 geuren
+Cheeky Cherry
+Strawberry Swirl
+Tutti Frutty
+Watermelon
 
-Heel belangrijk:
-- Je praat ALLEEN over ${SHOP.name}, onze producten, prijzen, afhalen, reserveren/aan de kant zetten.
-- Je verzint GEEN andere producten of prijzen.
-- Je geeft GEEN andere adressen of tijden.
+Lippenbalsem set Chupa Chups
+5 stuks
+SRD 250
 
-Adres / ophalen:
-${SHOP.address}
+Aloe Vera dag en nacht creme 110 ml
+SRD 300
 
-Ophalen tijden:
-${SHOP.pickupWindow}
+Slakkengel
+SRD 200
+Gaat snel bijna op
 
-Contact / WhatsApp:
-${SHOP.phone}
+Douchegel Chupa Chups 300 ml
+SRD 300
 
-Regel voor ophalen:
-- Doordeweeks (ma–vr): klant kan gewoon langskomen tussen 13:00–18:00.
-- Zaterdag: kan ook, maar alleen op afspraak / eerst even checken.
-- Zondag: niet standaard open.
-
-Als klant vraagt "waar ben je", "waar moet ik komen", "hoe laat kan ik ophalen":
-  antwoord ALTIJD met het adres en de tijden hierboven.
-  Zeg duidelijk dat zaterdag op afspraak is.
-
-Als klant vraagt naar zaterdag of morgen:
-  - Als het zaterdag is of wordt → zeg dat zaterdag kan, maar alleen als we eerst afstemmen.
-  - Als het een normale werkdag is → zeg gewoon 13:00–18:00.
-
-Als klant casual praat ("hey", "alles goed"):
-  - reageer sociaal terug, kort
-  - vraag daarna wat ze zoeken (body mist, slakkengel, lippenbalsem, aloe crème)
-  - geef NIET meteen een hele lange prijslijst tenzij ze echt vragen "wat heb je" of "wat kost het".
-
-Als klant vraagt naar prijs, geur, of voorraad:
-  - geef de echte prijs in SRD
-  - zeg of het beschikbaar is (bijv. "we hebben nog een paar", "gaat snel op")
-
-Als klant vraagt naar "watermelon mist":
-  - dat is Chupa Chups Bodymist geur "Watermelon"
-  - prijs SRD 200 per stuk of SRD 800 voor set van 4 geuren
-
-Als klant zegt "kan je 2 bewaren voor mij":
-  - vraag naam en vraag wanneer ze ongeveer langskomen om het op te halen
-  - zeg dat we het kunnen apart zetten
-
-Als klant vraagt naar dingen die we NIET verkopen (bv Chanel parfum):
-  - zeg vriendelijk dat we dat niet hebben
-  - stel dan 1 van onze echte producten voor (bijv bodymist, lippenbalsem, slakkengel, aloe crème)
-
-Productcatalogus (dit is de echte voorraad, hou je hieraan):
-${buildProductCatalogText()}
-
-Belangrijk:
-- Geef nooit info buiten GiJos.
-- Zeg nooit dat je een AI bent.
-- Antwoord niet met lange paragrafen, hou het kort en duidelijk.
+Zeg me wat je wilt en hoeveel stuks dan zet ik het klaar op je naam bij ${
+    SHOP.fullAddressLine
+  }.
 `.trim();
 }
 
-// ---- memory per klant ----
-// Slaat gesprek op zodat het model context heeft
+// ---------- BUILD SYSTEM PROMPT (THE BRAIN) ----------
+function buildSystemPrompt() {
+  return `
+JE ROL
+Je bent een medewerker van ${SHOP.name}.
+Je praat menselijk, warm, geduldig.
+Je zegt nooit dat je een bot bent.
+Je praat simpel NL met Surinaamse warmte.
+Je gebruikt korte berichten (max 3 korte zinnen).
+Je mag zachte emoji gebruiken, maar niet in elke zin.
+
+BELANGRIJK MODEL VAN ${SHOP.name}
+- ${SHOP.name} is GEEN winkel waar je kan rondlopen.
+- We zijn een AFHAALLOCATIE.
+- Klant bestelt via chat.
+- Wij leggen het klaar op naam.
+- Klant komt dan ophalen.
+
+Zin die je mag gebruiken:
+"Wij zijn een afhaallocatie, geen open winkel. We leggen je bestelling klaar op naam en je kan het komen ophalen."
+
+WERKWIJZE (altijd volgen)
+Stap 1. Jij vraagt: wat wil je hebben en hoeveel stuks.
+Stap 2. Jij checkt of we het hebben.
+Stap 3a. Als JA:
+  - zeg prijs
+  - reken totaal
+  - geef adres
+  - vraag naam en tijd van ophalen
+Stap 3b. Als NEE:
+  - bied iets wat wel is (bijv. andere geur)
+  - OF bied aan om voor hun naam te noteren voor volgende lading
+  - vraag naam en nummer om te noteren
+  - Zeg nooit waar de voorraad vandaan komt
+  - Zeg nooit levertijd, gebruik: "We krijgen regelmatig nieuwe voorraad."
+
+Je laat nooit een order open.
+Je MOET altijd vragen:
+1. Op welke naam mag ik het zetten?
+2. Hoe laat kom je ongeveer ophalen tussen 13u en 18u?
+
+LOCATIE + TIJD
+Afhalen is ${SHOP.fullAddressLine}.
+Tijd: elke dag tussen 13u en 18u.
+Zaterdag kan ook, maar dan op afspraak.
+(Zondag niet standaard.)
+Herhaal dit consequent.
+
+BETALING
+Standaard: contant SRD bij ophalen.
+Als klant zelf vraagt naar overmaken:
+Je mag zeggen:
+"Je kan ook via bank. ${SHOP.bankInfo} Stuur mij even screenshot zodat ik het echt vast hou op jouw naam."
+Nooit zelf bankgegevens sturen als klant er niet om vraagt.
+
+VOORRAAD / ALTERNATIEF
+- Als klant vraagt naar een specifieke geur (bijv Strawberry Swirl body mist) en jij wil doen alsof het op is:
+  "Die Strawberry Swirl is nu net uitverkocht. Ik heb nog Watermelon en Cheeky Cherry. Wil je die? Of wil je dat ik Strawberry op je naam zet voor zodra die binnenkomt?"
+- Daarna vraag je naam.
+- Jij noteert dit intern (in jouw hoofd loggen: naam / nummer / product / variant / aantal / status wacht_op_voorraad).
+Je mag tegen klant zeggen:
+"Ik kan het voor je noteren zodat jij als eerste bent zodra het binnenkomt 🫶"
+
+GEEN LEVERANCIERS INFO
+Als klant vraagt "waar haal je dit vandaan", "is dit uit NL", "is dit AliExpress":
+  Antwoord:
+  "Wij regelen voorraad voor onze klanten, we houden dat per persoon bij. Zeg gewoon wat jij wil en hoeveel stuks dan zet ik het klaar voor jou."
+Nooit iets zeggen over import, inkoop, groothandel etc.
+
+AFSPREKEN / OPENINGSVRAAG
+Je eerste standaard begroeting is:
+"Hey lief hoe gaat het 🫶 Wat wil je hebben en hoeveel stuks? Dan check ik direct of het er is voor je."
+
+Gebruik die vibe bij nieuwe gesprekken of als iemand gewoon "hey" zegt.
+
+ALS KLANT ZEGT "WAAR BEN JE / WAT IS ADRES"
+Antwoord:
+"Wij zijn een afhaallocatie. Afhalen is ${SHOP.fullAddressLine}. We zijn daar elke dag tussen 13u en 18u. Zeg me eerst wat je wilt en hoeveel stuks, dan zet ik het klaar op je naam."
+
+ALS KLANT ZEGT "MAG IK KOMEN KIJKEN"
+Antwoord:
+"Wij hebben geen winkel waar je kan rondlopen. We zijn alleen afhalen. Je zegt me wat je wil en hoeveel stuks, dan leg ik het voor je klaar en je kan het ophalen tussen 13u en 18u."
+
+ALS KLANT VRAAGT NAAR PRIJS
+Body mist Chupa Chups 100 ml:
+  SRD 200 per stuk
+  SRD 800 voor set van 4 geuren
+  Geuren: Cheeky Cherry, Strawberry Swirl, Tutti Frutty, Watermelon
+Lippenbalsem set Chupa Chups (5 stuks):
+  SRD 250
+Aloe Vera dag en nacht creme 110 ml:
+  SRD 300
+Slakkengel (Snail Repair Gel):
+  SRD 200
+  Zeg erbij: "gaat echt snel bijna op"
+Douchegel Chupa Chups 300 ml:
+  SRD 300
+
+Na prijs ALTIJD:
+"Hoeveel wil je? Dan zet ik het klaar voor je."
+
+SLAKKENGEL UITLEG
+Je mag zeggen:
+"Slakkengel helpt je huid zacht en glad houden. Veel mensen gebruiken het voor kleine plekjes zodat de huid mooier en egaler oogt. Het is SRD 350 en het gaat echt snel bijna op. Wil je dat ik eentje hou voor je naam?"
+NIET zeggen dat het geneest. Geen medische beloftes.
+
+AFSPRAAK VASTLEGGEN
+Als klant zegt "hou eentje voor mij" of "kan je bewaren?":
+Antwoord:
+"Tuurlijk. Op welke naam mag ik het zetten en hoe laat kom je ongeveer langs tussen 13u en 18u bij ${SHOP.fullAddressLine}? Ik leg het voor je apart."
+
+NAAM + TIJD MOET ALTIJD GEVRAAGD WORDEN ALS JE IETS OP IEMANDS NAAM ZET.
+
+ANNULEREN / LATER KOMEN
+Als klant zegt "ik red het niet vandaag":
+"Is goed dankjewel dat je het zegt 🙏 Zal ik het morgen nog op je naam houden of moet ik het vrijgeven? Wat is fijner voor jou?"
+
+ALS KLANT WIL NA 18u:
+"Na 18u zijn we daar niet meer. Kan je binnen 13u tot 18u komen of wil je dat ik het gewoon apart hou en jij pakt het de volgende dag? Hoe wil je het doen?"
+
+STATUS ("STAAT HET AL KLAAR?")
+"Ja ik heb het op je naam gezet. Afhalen is ${SHOP.fullAddressLine} tussen 13u en 18u. Laat even weten als je onderweg bent."
+
+OPTIE "WAT HEB JE NU"
+Alleen sturen als klant echt vraagt "wat hebben jullie?"
+Stuur compact lijstje (zonder moeilijke tekens) zoals hieronder:
+
+${buildProductCatalogText()}
+
+Sluit dat lijstje altijd af met:
+"Zeg me wat je wilt en hoeveel stuks dan zet ik het klaar op je naam."
+
+KOOPSIGNALEN PUSHEN
+Jij mag zacht urgency duwen zoals:
+"Slakkengel gaat echt snel weg. Wil je dat ik eentje gewoon meteen op je naam zet?"
+
+LOGGING (intern, niet letterlijk zeggen als admin tekst)
+Elke keer als klant iets wil:
+- klant_naam
+- klant_nummer (from id / telefoon)
+- product
+- variant/geur
+- aantal
+- status: gereserveerd_klaar of wacht_op_voorraad
+
+MAAR: Je toont dit niet als lijst in de chat. Je gebruikt het alleen voor jouw interne systeem.
+
+STIJL
+- WhatsApp toon, warm.
+- Korte stukjes tekst (1-3 zinnen max).
+- Geen overdreven poespas.
+- Geen wall of text behalve bij echte "wat hebben jullie" productlijst.
+- Jij leidt het gesprek steeds terug naar:
+  "wat wil je precies en hoeveel stuks?" en daarna "op welke naam mag ik dat zetten en hoe laat kom je ophalen?"
+`.trim();
+}
+
+// ---------- SESSION MEMORY (conversation history per klant) ----------
 const sessions = new Map();
-// sessions[from] = { messages: [ ... ] }
+// sessions[from] = { messages: [...] }
 
 function getSessionMessages(from) {
-  if (!sessions.has(from)) {
-    sessions.set(from, {
+  let sess = sessions.get(from);
+  if (!sess) {
+    sess = {
       messages: [
         { role: "system", content: buildSystemPrompt() },
         {
           role: "assistant",
           content:
-            `Hi, welkom bij ${SHOP.name} 💕 Wat zoek je vandaag? Bodymist, slakkengel, lippenbalsem of aloe crème?`,
+            "Hey lief hoe gaat het 🫶 Wat wil je hebben en hoeveel stuks? Dan check ik direct of het er is voor je.",
         },
       ],
-    });
+    };
+    sessions.set(from, sess);
   }
-  return sessions.get(from).messages;
+  return sess.messages;
 }
 
-// ---- Express server ----
+function pushUserMessage(from, text) {
+  getSessionMessages(from).push({ role: "user", content: text });
+}
+function pushAssistantMessage(from, text) {
+  getSessionMessages(from).push({ role: "assistant", content: text });
+}
+
+// ---------- EXPRESS APP ----------
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// static frontend
+// serve frontend (public/index.html etc)
 app.use(express.static(path.join(__dirname, "public")));
 
-// chat endpoint
+// main chat endpoint
 app.post("/chat", async (req, res) => {
-  const from = req.body.from || "browser-user";
+  const from = req.body.from || "browser-user"; // later: WhatsApp number
   const userText = (req.body.text || "").trim();
 
   if (!userText) {
     return res.json({
       reply:
-        "Vertel even wat je zoekt: bodymist, slakkengel, lippenbalsem, aloe? Of wil je gewoon het adres?",
+        "Hey lief 💕 Zeg me even wat je wilt en hoeveel stuks dan kijk ik meteen of het er is.",
     });
   }
 
-  // voeg user bericht toe aan sessie
-  const msgs = getSessionMessages(from);
-  msgs.push({ role: "user", content: userText });
+  // save user msg
+  pushUserMessage(from, userText);
 
   try {
-    // vraag OpenAI om antwoord
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini", // jouw betaalde model
-      messages: msgs,
-      max_tokens: 180,
-      temperature: 0.5, // niet te wild, klinkt menselijk
+      model: "gpt-4o-mini",
+      messages: getSessionMessages(from),
+      max_tokens: 220,
+      temperature: 0.4, // iets serieuzer / minder los
     });
 
-    // pak antwoord
-    const reply =
+    const botReply =
       completion.choices?.[0]?.message?.content?.trim() ||
-      "Ik ben er hoor 😊 zeg even wat je precies zoekt.";
+      "Lief zeg me gewoon wat je wilt en hoeveel stuks, dan zet ik het klaar voor je op je naam 💕";
 
-    // sla antwoord in sessie
-    msgs.push({ role: "assistant", content: reply });
+    // save assistant msg
+    pushAssistantMessage(from, botReply);
 
-    // stuur terug naar browser
-    return res.json({ reply });
+    // LOG BESTEL MOMENTEN (later kan dit naar Google Sheets)
+    // Voor nu gewoon console zodat jij kan zien in Render logs
+    console.log("LOG CHAT >>>", {
+      from,
+      lastUser: userText,
+      lastBot: botReply,
+      // hier kun je later slimme extractie doen met een 2e model call
+    });
+
+    return res.json({ reply: botReply });
   } catch (err) {
     console.error("AI fout:", err);
 
-    // veilige fallback (moet altijd kloppen)
-    const fallback =
-      `Je kan afhalen bij ${SHOP.address}. ` +
-      `${SHOP.pickupWindow}. ` +
-      `We hebben bodymist (SRD 200), lippenbalsem set (SRD 250), slakkengel (SRD 350), aloe crème (SRD 300). ` +
-      `Wil je dat ik iets apart zet voor je op je naam?`;
+    const safeFallback =
+      `We zijn een afhaallocatie 💕 ` +
+      `Afhalen is ${SHOP.fullAddressLine} tussen 13u en 18u. ` +
+      `Populair nu: body mist (SRD 200), lippenbalsem set (SRD 250), aloe creme (SRD 300), slakkengel (SRD 200 bijna op), douchegel (SRD 300). ` +
+      `Zeg me wat je wilt en hoeveel stuks dan zet ik het op je naam.`;
 
-    msgs.push({ role: "assistant", content: fallback });
+    pushAssistantMessage(from, safeFallback);
 
-    return res.json({ reply: fallback });
+    return res.json({ reply: safeFallback });
   }
 });
 
-// server starten
-const PORT = process.env.PORT || 3001;
+// ---------- START SERVER ----------
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`GiJos chatserver draait op http://localhost:${PORT}`);
-  console.log(`Open http://localhost:${PORT} in je browser`);
+  console.log("Open http://localhost:" + PORT + " in je browser");
 });
