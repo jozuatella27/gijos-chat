@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GiJos Chat</title>
+  <style>
+    body {
+      background: #fff8fa;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+      max-width: 420px;
+      margin: 30px auto;
+      color: #111;
+    }
+
+    .header {
+      background: linear-gradient(90deg,#e35fa3,#ff9ac6);
+      color: #fff;
+      padding: 16px;
+      border-radius: 12px;
+      font-size: 14px;
+      line-height: 1.4;
+      box-shadow: 0 18px 40px rgba(227,95,163,0.35);
+    }
+
+    .header strong {
+      font-size: 16px;
+      font-weight: 600;
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .chat-box {
+      background: #fff;
+      border: 1px solid #f0bfd8;
+      border-radius: 12px;
+      margin-top: 16px;
+      padding: 12px;
+      height: 440px;
+      overflow-y: auto;
+      box-shadow: 0 24px 48px rgba(0,0,0,0.07);
+    }
+
+    .msg {
+      margin-bottom: 10px;
+      line-height: 1.4;
+      word-break: break-word;
+      font-size: 14px;
+    }
+
+    .msg.user {
+      text-align: right;
+    }
+
+    .bubble-user {
+      display: inline-block;
+      background: #e35fa3;
+      color: #fff;
+      padding: 10px 12px;
+      border-radius: 12px 12px 4px 12px;
+      max-width: 80%;
+      border: 1px solid #d35295;
+    }
+
+    .msg.bot {
+      text-align: left;
+    }
+
+    .bubble-bot {
+      display: inline-block;
+      background: #fff;
+      color: #333;
+      padding: 10px 12px;
+      border-radius: 12px 12px 12px 4px;
+      max-width: 80%;
+      border: 1px solid #f0bfd8;
+      background-clip: padding-box;
+    }
+
+    .input-row {
+      margin-top: 16px;
+      display: flex;
+      gap: 8px;
+    }
+
+    .input-row input {
+      flex: 1;
+      border-radius: 10px;
+      border: 1px solid #f0bfd8;
+      font-size: 14px;
+      padding: 10px 12px;
+      outline: none;
+      background: #fff;
+      color: #111;
+    }
+
+    .input-row button {
+      background: #e35fa3;
+      border: 0;
+      color: #fff;
+      font-weight: 600;
+      font-size: 14px;
+      border-radius: 10px;
+      padding: 10px 14px;
+      cursor: pointer;
+      box-shadow: 0 14px 30px rgba(227,95,163,0.4);
+    }
+
+    .hint {
+      margin-top: 16px;
+      font-size: 12px;
+      color: #666;
+      line-height: 1.4;
+      text-align: center;
+    }
+
+    .hint code {
+      background: #ffe4f1;
+      padding: 2px 4px;
+      border-radius: 4px;
+      border: 1px solid #f0bfd8;
+      font-size: 12px;
+      color: #c03d7f;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <strong>GiJos Beauty Assistant 💄✨</strong>
+    Pickup: Bromidestraat 32, Tourtonne 5 • ma–vr 13:00–18:00  
+    Zaterdag op afspraak
+  </div>
+
+  <div id="chatBox" class="chat-box"></div>
+
+  <div class="input-row">
+    <input id="textInput" placeholder="Typ hier..." />
+    <button id="sendBtn">Verstuur</button>
+  </div>
+
+  <div class="hint">
+    Dit is een test-chat. Uiteindelijk koppelen we dit aan WhatsApp.<br/>
+    Je kan vragen: <code>heb je watermelon mist?</code> of <code>waar haal ik het?</code>
+  </div>
+
+  <script>
+    const chatBox = document.getElementById("chatBox");
+    const inputEl = document.getElementById("textInput");
+    const sendBtn = document.getElementById("sendBtn");
+
+    function addMsg(role, text) {
+      const row = document.createElement("div");
+      row.className = "msg " + role;
+
+      const bubble = document.createElement("div");
+      bubble.className = role === "user" ? "bubble-user" : "bubble-bot";
+      bubble.textContent = text;
+
+      row.appendChild(bubble);
+      chatBox.appendChild(row);
+
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    async function sendMsg() {
+      const text = inputEl.value.trim();
+      if (!text) return;
+
+      // toon mijn bericht
+      addMsg("user", text);
+
+      // clear input
+      inputEl.value = "";
+
+      // stuur naar server /chat
+      const res = await fetch("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: text
+        })
+      });
+
+      const data = await res.json();
+      addMsg("bot", data.reply || "Geen antwoord gekregen.");
+    }
+
+    sendBtn.addEventListener("click", sendMsg);
+    inputEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") sendMsg();
+    });
+
+    // eerste begroeting van de bot in de UI
+    addMsg("bot", "Hi 💕 welkom bij GiJos. Wat zoek je vandaag? Bodymist, slakkengel, lippenbalsem of wil je gewoon het adres?");
+  </script>
+
+</body>
+</html>
